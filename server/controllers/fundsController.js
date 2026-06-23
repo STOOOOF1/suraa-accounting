@@ -148,10 +148,16 @@ const remove = async (req, res) => {
 
 /**
  * ترحيل حركات خزينة إلى خزينة أخرى (للمدير فقط)
+ * استراتيجية: نسخ الحركات إلى الخزينة الهدف ثم حذف القديمة
  */
 const transfer = async (req, res) => {
   try {
-    const authed = getAuthClient(req.headers.authorization.replace('Bearer ', ''));
+    const token = req.headers.authorization.replace('Bearer ', '');
+    const authed = getAuthClient(token);
+    const adminClient = process.env.SUPABASE_SERVICE_ROLE_KEY
+      ? createClient(supabaseUrl, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
+      : authed;
+
     const { id } = req.params;
     const { target_fund_id } = req.body;
 
@@ -170,7 +176,7 @@ const transfer = async (req, res) => {
     // جلب الحركات قبل الترحيل
     const { data: oldTx, error: txError } = await authed
       .from('fund_transactions')
-      .select('id, amount, type')
+      .select('type, amount, description, reference_no, created_by, attachment_url')
       .eq('fund_id', id);
 
     if (txError) return res.status(400).json({ message: txError.message });
@@ -179,58 +185,31 @@ const transfer = async (req, res) => {
       return res.status(400).json({ message: 'لا توجد حركات مالية للترحيل في هذه الخزينة.' });
     }
 
-    // تحديث fund_id للحركات إلى الخزينة الهدف
-    const { error: updateError } = await authed
-      .from('fund_transactions')
-      .update({ fund_id: target_fund_id })
-      .eq('fund_id', id);
+    // نسخ الحركات إلى الخزينة الهدف
+    const newTx = oldTx.map(t => ({
+      fund_id: target_fund_id,
+      type: t.type,
+      amount: t.amount,
+      description: t.description || '',
+      reference_no: t.reference_no,
+      created_by: t.created_by,
+      attachment_url: t.attachment_url,
+    }));
 
-    // إذا فشل التحديث بسبب RLS، نحاول عبر الاتصال المباشر
-    if (updateError) {
-      if (process.env.SUPABASE_DB_PASSWORD) {
-        try {
-          const { Client } = require('pg');
-          const projectRef = process.env.SUPABASE_URL.match(/https:\/\/(.+)\.supabase\.co/)[1];
-          const client = new Client({
-            host: `${projectRef}.supabase.co`,
-            port: 5432,
-            database: 'postgres',
-            user: 'postgres',
-            password: process.env.SUPABASE_DB_PASSWORD,
-            ssl: { rejectUnauthorized: false },
-            connectionTimeoutMillis: 8000,
-          });
-          await client.connect();
-          const ids = oldTx.map(t => `'${t.id}'`).join(',');
-          await client.query(`UPDATE public.fund_transactions SET fund_id = '${target_fund_id}' WHERE id IN (${ids})`);
-          await client.end();
-        } catch (pgErr) {
-          return res.status(400).json({
-            message: 'تعذر تحديث الحركات. يرجى تشغيل ترحيل 005 في Supabase Dashboard > SQL Editor.',
-            detail: 'server/migrations/005_transfer_policy.sql',
-          });
-        }
-      } else {
-        return res.status(400).json({
-          message: 'تعذر تحديث الحركات. يرجى تشغيل ترحيل 005 في Supabase Dashboard > SQL Editor.',
-          detail: 'server/migrations/005_transfer_policy.sql',
-        });
-      }
+    const { error: insertError } = await adminClient.from('fund_transactions').insert(newTx);
+    if (insertError) return res.status(400).json({ message: insertError.message });
+
+    // حذف الحركات القديمة
+    const { data: deletedData, error: deleteError } = await adminClient.from('fund_transactions').delete().eq('fund_id', id);
+    if (deleteError) return res.status(400).json({ message: deleteError.message });
+    if (!deletedData || deletedData.length === 0) {
+      return res.status(400).json({
+        message: 'تعذر حذف الحركات القديمة. لتشغيل خاصية الترحيل:',
+        detail: '1. افتح Supabase Dashboard > SQL Editor والصق محتوى server/migrations/005_transfer_policy.sql\n2. أو أضف SUPABASE_SERVICE_ROLE_KEY في server/.env (من Supabase Dashboard > Settings > API)',
+      });
     }
 
-    // حساب الرصيد الجديد للخزينة القديمة (صفر)
-    const calcBalance = (txs) => (txs || []).reduce((s, t) => s + (t.type === 'deposit' ? Number(t.amount) : -Number(t.amount)), 0);
-
-    // الرصيد القديم للخزينة المصدر
-    const oldBalance = calcBalance(oldTx);
-
-    // جلب الرصيد الحالي للخزينة الهدف وتحديثه
-    const { data: targetFundData } = await authed.from('funds').select('balance').eq('id', target_fund_id).single();
-    const newTargetBalance = Number(targetFundData?.balance || 0) + oldBalance;
-
-    await authed.from('funds').update({ balance: 0 }).eq('id', id);
-    await authed.from('funds').update({ balance: newTargetBalance }).eq('id', target_fund_id);
-
+    // trigger trg_update_balance يعمل تلقائياً على INSERT و DELETE
     res.json({ message: `تم ترحيل ${oldTx.length} حركة بنجاح إلى الخزينة الهدف.` });
   } catch (error) {
     res.status(500).json({ message: 'حدث خطأ أثناء ترحيل الحركات.' });
