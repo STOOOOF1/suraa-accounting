@@ -14,11 +14,10 @@ const getSummary = async (req, res) => {
   try {
     const authed = getAuthClient(req.headers.authorization.replace('Bearer ', ''));
 
-    const [mainFunds, restrictedFunds, deposits, withdrawals, recentTx] = await Promise.all([
-      authed.from('funds').select('balance').eq('type', 'main'),
-      authed.from('funds').select('balance').eq('type', 'restricted'),
-      authed.from('fund_transactions').select('amount').eq('type', 'deposit'),
-      authed.from('fund_transactions').select('amount').eq('type', 'withdrawal'),
+    const [fundsRes, deposits, withdrawals, recentTx] = await Promise.all([
+      authed.from('funds').select('*').order('type', { ascending: true }).order('name', { ascending: true }),
+      authed.from('fund_transactions').select('fund_id, amount').eq('type', 'deposit'),
+      authed.from('fund_transactions').select('fund_id, amount').eq('type', 'withdrawal'),
       authed
         .from('fund_transactions')
         .select('*, funds!inner(name)')
@@ -26,17 +25,34 @@ const getSummary = async (req, res) => {
         .limit(10),
     ]);
 
-    const totalMain = (mainFunds.data || []).reduce((s, f) => s + Number(f.balance), 0);
-    const totalRestricted = (restrictedFunds.data || []).reduce((s, f) => s + Number(f.balance), 0);
-    const totalDeposits = (deposits.data || []).reduce((s, t) => s + Number(t.amount), 0);
-    const totalWithdrawals = (withdrawals.data || []).reduce((s, t) => s + Number(t.amount), 0);
+    if (fundsRes.error) return res.status(400).json({ message: fundsRes.error.message });
+
+    const funds = fundsRes.data || [];
+    const depositsData = deposits.data || [];
+    const withdrawalsData = withdrawals.data || [];
+
+    const totalMain = funds.filter(f => f.type === 'main').reduce((s, f) => s + Number(f.balance), 0);
+    const totalRestricted = funds.filter(f => f.type === 'restricted').reduce((s, f) => s + Number(f.balance), 0);
+    const totalDeposits = depositsData.reduce((s, t) => s + Number(t.amount), 0);
+    const totalWithdrawals = withdrawalsData.reduce((s, t) => s + Number(t.amount), 0);
 
     const transactions = (recentTx.data || []).map(t => ({
       ...t,
       fund_name: t.funds?.name || '',
     }));
 
-    if (mainFunds.error) return res.status(400).json({ message: mainFunds.error.message });
+    const fundDetails = funds.map(f => {
+      const fundDeposits = depositsData.filter(t => t.fund_id === f.id).reduce((s, t) => s + Number(t.amount), 0);
+      const fundWithdrawals = withdrawalsData.filter(t => t.fund_id === f.id).reduce((s, t) => s + Number(t.amount), 0);
+      return {
+        id: f.id,
+        name: f.name,
+        type: f.type,
+        balance: Number(f.balance),
+        total_deposits: fundDeposits,
+        total_withdrawals: fundWithdrawals,
+      };
+    });
 
     res.json({
       main_balance: totalMain,
@@ -44,9 +60,10 @@ const getSummary = async (req, res) => {
       total_deposits: totalDeposits,
       total_withdrawals: totalWithdrawals,
       recent_transactions: transactions,
+      funds: fundDetails,
     });
   } catch (error) {
-    res.status(500).json({ message: 'حدث خطأ أثناء جلب بيانات الداش بورد.' });
+    res.status(500).json({ message: 'حدث خطأ أثناء جلب بيانات لوحة المعلومات.' });
   }
 };
 

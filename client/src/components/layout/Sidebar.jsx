@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 
 const navItems = [
-  { icon: LayoutDashboard, label: 'لوحة القيادة', path: '/', roles: ['admin', 'data_entry'] },
+  { icon: LayoutDashboard, label: 'لوحة المعلومات', path: '/', roles: ['admin', 'data_entry'] },
   { icon: Wallet, label: 'الخزائن', path: '/funds', roles: ['admin', 'data_entry'] },
   { icon: ArrowDownFromLine, label: 'سندات القبض', path: '/receipts', roles: ['admin', 'data_entry'] },
   { icon: ArrowUpFromLine, label: 'سندات الصرف', path: '/payments', roles: ['admin', 'data_entry'] },
