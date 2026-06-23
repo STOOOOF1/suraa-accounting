@@ -40,4 +40,14 @@ export const fundsApi = {
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
+
+  remove: async (id) => {
+    const token = (await supabase.auth.getSession()).data.session?.access_token;
+    const res = await fetch(`/api/funds/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
 };

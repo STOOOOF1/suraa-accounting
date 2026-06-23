@@ -117,4 +117,33 @@ const update = async (req, res) => {
   }
 };
 
-module.exports = { getAll, getById, create, update };
+/**
+ * حذف خزينة (للمدير فقط - بشرط ألا يكون لها حركات)
+ */
+const remove = async (req, res) => {
+  try {
+    const authed = getAuthClient(req.headers.authorization.replace('Bearer ', ''));
+    const { id } = req.params;
+
+    const { data: txList, error: txError } = await authed
+      .from('fund_transactions')
+      .select('id')
+      .eq('fund_id', id)
+      .limit(1);
+
+    if (txError) return res.status(400).json({ message: txError.message });
+
+    if (txList && txList.length > 0) {
+      return res.status(400).json({ message: 'لا يمكن حذف الخزينة لوجود حركات مالية مرتبطة بها.' });
+    }
+
+    const { error } = await authed.from('funds').delete().eq('id', id);
+
+    if (error) return res.status(400).json({ message: error.message });
+    res.json({ message: 'تم حذف الخزينة بنجاح.' });
+  } catch (error) {
+    res.status(500).json({ message: 'حدث خطأ أثناء حذف الخزينة.' });
+  }
+};
+
+module.exports = { getAll, getById, create, update, remove };
