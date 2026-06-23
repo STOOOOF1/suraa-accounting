@@ -17,6 +17,8 @@ async function runMigrations(supabaseUrl, supabaseAnonKey) {
     .limit(1);
 
   const columnExists = !error || !error.message?.toLowerCase().includes('attachment_url');
+  const migration005Applied = true; // سنتحقق منه بعد الترحيل 004
+
   if (!columnExists) {
     console.log('⚠️  عمود attachment_url غير موجود. جاري تشغيل الترحيل...');
 

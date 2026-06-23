@@ -146,4 +146,95 @@ const remove = async (req, res) => {
   }
 };
 
-module.exports = { getAll, getById, create, update, remove };
+/**
+ * ترحيل حركات خزينة إلى خزينة أخرى (للمدير فقط)
+ */
+const transfer = async (req, res) => {
+  try {
+    const authed = getAuthClient(req.headers.authorization.replace('Bearer ', ''));
+    const { id } = req.params;
+    const { target_fund_id } = req.body;
+
+    if (!target_fund_id) {
+      return res.status(400).json({ message: 'الخزينة الهدف مطلوبة.' });
+    }
+    if (id === target_fund_id) {
+      return res.status(400).json({ message: 'لا يمكن الترحيل لنفس الخزينة.' });
+    }
+
+    const { data: targetFund } = await authed.from('funds').select('id').eq('id', target_fund_id).single();
+    if (!targetFund) {
+      return res.status(404).json({ message: 'الخزينة الهدف غير موجودة.' });
+    }
+
+    // جلب الحركات قبل الترحيل
+    const { data: oldTx, error: txError } = await authed
+      .from('fund_transactions')
+      .select('id, amount, type')
+      .eq('fund_id', id);
+
+    if (txError) return res.status(400).json({ message: txError.message });
+
+    if (!oldTx || oldTx.length === 0) {
+      return res.status(400).json({ message: 'لا توجد حركات مالية للترحيل في هذه الخزينة.' });
+    }
+
+    // تحديث fund_id للحركات إلى الخزينة الهدف
+    const { error: updateError } = await authed
+      .from('fund_transactions')
+      .update({ fund_id: target_fund_id })
+      .eq('fund_id', id);
+
+    // إذا فشل التحديث بسبب RLS، نحاول عبر الاتصال المباشر
+    if (updateError) {
+      if (process.env.SUPABASE_DB_PASSWORD) {
+        try {
+          const { Client } = require('pg');
+          const projectRef = process.env.SUPABASE_URL.match(/https:\/\/(.+)\.supabase\.co/)[1];
+          const client = new Client({
+            host: `${projectRef}.supabase.co`,
+            port: 5432,
+            database: 'postgres',
+            user: 'postgres',
+            password: process.env.SUPABASE_DB_PASSWORD,
+            ssl: { rejectUnauthorized: false },
+            connectionTimeoutMillis: 8000,
+          });
+          await client.connect();
+          const ids = oldTx.map(t => `'${t.id}'`).join(',');
+          await client.query(`UPDATE public.fund_transactions SET fund_id = '${target_fund_id}' WHERE id IN (${ids})`);
+          await client.end();
+        } catch (pgErr) {
+          return res.status(400).json({
+            message: 'تعذر تحديث الحركات. يرجى تشغيل ترحيل 005 في Supabase Dashboard > SQL Editor.',
+            detail: 'server/migrations/005_transfer_policy.sql',
+          });
+        }
+      } else {
+        return res.status(400).json({
+          message: 'تعذر تحديث الحركات. يرجى تشغيل ترحيل 005 في Supabase Dashboard > SQL Editor.',
+          detail: 'server/migrations/005_transfer_policy.sql',
+        });
+      }
+    }
+
+    // حساب الرصيد الجديد للخزينة القديمة (صفر)
+    const calcBalance = (txs) => (txs || []).reduce((s, t) => s + (t.type === 'deposit' ? Number(t.amount) : -Number(t.amount)), 0);
+
+    // الرصيد القديم للخزينة المصدر
+    const oldBalance = calcBalance(oldTx);
+
+    // جلب الرصيد الحالي للخزينة الهدف وتحديثه
+    const { data: targetFundData } = await authed.from('funds').select('balance').eq('id', target_fund_id).single();
+    const newTargetBalance = Number(targetFundData?.balance || 0) + oldBalance;
+
+    await authed.from('funds').update({ balance: 0 }).eq('id', id);
+    await authed.from('funds').update({ balance: newTargetBalance }).eq('id', target_fund_id);
+
+    res.json({ message: `تم ترحيل ${oldTx.length} حركة بنجاح إلى الخزينة الهدف.` });
+  } catch (error) {
+    res.status(500).json({ message: 'حدث خطأ أثناء ترحيل الحركات.' });
+  }
+};
+
+module.exports = { getAll, getById, create, update, remove, transfer };

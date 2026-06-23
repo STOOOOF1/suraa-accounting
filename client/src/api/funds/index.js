@@ -50,4 +50,15 @@ export const fundsApi = {
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
+
+  transfer: async (id, targetFundId) => {
+    const token = (await supabase.auth.getSession()).data.session?.access_token;
+    const res = await fetch(`/api/funds/${id}/transfer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ target_fund_id: targetFundId }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
 };
